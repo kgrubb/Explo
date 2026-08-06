@@ -230,14 +230,27 @@ func saveVideo(c Youtube, track models.Track, stream *goutubedl.DownloadResult) 
 	var streams []*ffmpeg.Stream
 	streams = append(streams, ffmpeg.Input(input))
 	if c.Cfg.EmbedCoverArt && track.CoverURL != "" {
-		if track.CoverPath == "" {
-			if _, track.CoverPath = util.DownloadCover(track.CoverURL, c.Cfg.CoversDir); track.CoverPath != "" {
-    			streams = append(streams, ffmpeg.Input(track.CoverPath))
+		if supportsAttachedPic(outputPath) {
+			if track.CoverPath == "" {
+				_, track.CoverPath = util.DownloadCover(track.CoverURL, c.Cfg.CoversDir)
 			}
+			if track.CoverPath != "" {
+				streams = append(streams, ffmpeg.Input(track.CoverPath))
+			}
+		} else {
+			slog.Debug("container cannot hold cover art, skipping embed", "path", outputPath)
 		}
+	}
+
+	if len(streams) > 1 {
+		// ffmpeg-go maps every input on its own. Without these the image is re-encoded
+		// into an ordinary video stream, which players and library scanners ignore
+		// instead of reading as cover art.
 		opts = ffmpeg.KwArgs{
-			"metadata": metadata,
-			"loglevel": "error",
+			"c:v":             "copy",
+			"disposition:v:0": "attached_pic",
+			"metadata":        metadata,
+			"loglevel":        "error",
 		}
 	} else {
 		opts = ffmpeg.KwArgs{
@@ -252,6 +265,20 @@ func saveVideo(c Youtube, track models.Track, stream *goutubedl.DownloadResult) 
 	}
 
 	return true
+}
+
+// Ogg/Opus keep cover art in a base64 vorbis comment rather than a stream, so
+// muxing an image into them fails outright and would take the download with it.
+var attachedPicExts = map[string]bool{
+	".mp3":  true,
+	".m4a":  true,
+	".m4b":  true,
+	".mp4":  true,
+	".flac": true,
+}
+
+func supportsAttachedPic(path string) bool {
+	return attachedPicExts[strings.ToLower(filepath.Ext(path))]
 }
 
 // filter out video ID
